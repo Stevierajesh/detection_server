@@ -14,5 +14,5 @@ Apply detection rule
 NORMAL or DDoS
 ```
 
-Open sourcing this: [NSDI 2026 paper](https://www.usenix.org/system/files/nsdi26-xiao.pdf)
+Open sourcing this: [NSDI 2026 paper](https://www.usenix.org/system/files/nsdi26-xiao.pdf) (section 3.3)
 
