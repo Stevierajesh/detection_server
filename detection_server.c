@@ -24,6 +24,7 @@
 
 /* 2. Constants and Global Variables */
 #define RX_RING_SIZE 512
+#define BURST_SIZE 32
 static bool running = true;
 
 static void handle_signal(int signal)
@@ -89,10 +90,22 @@ int main(void) {
 
     port_init(0, mbuf_pool);
 
-    handle_signal(SIGINT);
+    signal(SIGINT, handle_signal);
 
     
-    
+    while(true){
+        struct rte_mbuf *bufs[BURST_SIZE];
+        uint16_t nb_rx = rte_eth_rx_burst(0, 0, bufs, BURST_SIZE);
+        if (nb_rx == 0) {
+            continue;
+        }
+        
+        for (uint16_t i = 0; i < nb_rx; i++) {
+            
+        }
+        
+        rte_pktmbuf_free_bulk(bufs, nb_rx);
+    }
     // printf("Hello, World!\n");
 
 
