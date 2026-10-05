@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <netinet/in.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
@@ -25,7 +26,52 @@
 /* 2. Constants and Global Variables */
 #define RX_RING_SIZE 512
 #define BURST_SIZE 32
+#define MAX_FLOWS 10000
 static bool running = true;
+
+struct flow_key {
+    uint32_t src_ip;
+    uint32_t dst_ip;
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint8_t protocol;
+};
+
+struct flow_stats {
+    struct flow_key key;
+    uint64_t packet_count;
+    uint64_t byte_count;
+    uint64_t first_seen;
+    uint64_t last_seen;
+};
+
+static struct flow_stats flow_table[MAX_FLOWS];
+static uint32_t flow_count = 0;
+
+static struct flow_stats* flow_lookup_or_create(struct flow_key *key, uint64_t timestamp)
+{
+    for (uint32_t i = 0; i < flow_count; i++) {
+        if (flow_table[i].key.src_ip == key->src_ip &&
+            flow_table[i].key.dst_ip == key->dst_ip &&
+            flow_table[i].key.src_port == key->src_port &&
+            flow_table[i].key.dst_port == key->dst_port &&
+            flow_table[i].key.protocol == key->protocol) {
+            return &flow_table[i];
+        }
+    }
+
+    if (flow_count >= MAX_FLOWS) {
+        return NULL;
+    }
+
+    flow_table[flow_count].key = *key;
+    flow_table[flow_count].packet_count = 0;
+    flow_table[flow_count].byte_count = 0;
+    flow_table[flow_count].first_seen = timestamp;
+    flow_table[flow_count].last_seen = timestamp;
+
+    return &flow_table[flow_count++];
+}
 
 static void handle_signal(int signal)
 {
@@ -86,26 +132,62 @@ int main(void) {
     // Say Hi :)...
 
     rte_eal_init(0, NULL);
-    rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", 8192, 250, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", 8192, 250, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 
     port_init(0, mbuf_pool);
 
     signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
 
-    
-    while(true){
+    printf("Starting packet processing loop...\n");
+
+    while(running){
         struct rte_mbuf *bufs[BURST_SIZE];
         uint16_t nb_rx = rte_eth_rx_burst(0, 0, bufs, BURST_SIZE);
         if (nb_rx == 0) {
             continue;
         }
-        
+
         for (uint16_t i = 0; i < nb_rx; i++) {
-            
+            struct rte_mbuf *pkt = bufs[i];
+            struct rte_ether_hdr *eth = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+
+            if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+                continue;
+            }
+
+            struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+            struct flow_key key = {
+                .src_ip = ip->src_addr,
+                .dst_ip = ip->dst_addr,
+                .protocol = ip->next_proto_id
+            };
+
+            if (key.protocol == IPPROTO_TCP) {
+                struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip + 1);
+                key.src_port = tcp->src_port;
+                key.dst_port = tcp->dst_port;
+            } else if (key.protocol == IPPROTO_UDP) {
+                struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
+                key.src_port = udp->src_port;
+                key.dst_port = udp->dst_port;
+            } else {
+                key.src_port = 0;
+                key.dst_port = 0;
+            }
+
+            struct flow_stats *flow = flow_lookup_or_create(&key, rte_rdtsc());
+            if (flow) {
+                flow->packet_count++;
+                flow->byte_count += pkt->pkt_len;
+                flow->last_seen = rte_rdtsc();
+            }
         }
-        
+
         rte_pktmbuf_free_bulk(bufs, nb_rx);
     }
+
+    printf("Shutting down. Processed %u flows.\n", flow_count);
     // printf("Hello, World!\n");
 
 
