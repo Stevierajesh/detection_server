@@ -22,7 +22,9 @@
 #include <rte_udp.h>
 #include <rte_ether.h>
 
-
+/* 2. Constants and Global Variables */
+#define RX_RING_SIZE 512
+static bool running = true;
 
 static void handle_signal(int signal)
 {
@@ -46,19 +48,11 @@ static int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         return ret;
     }
 
-    /*
-     * 1 RX queue
-     * 0 TX queues
-     */
     ret = rte_eth_dev_configure(port, 1, 0, &port_conf);
     if (ret < 0) {
         printf("Could not configure port %u\n", port);
         return ret;
     }
-
-    /*
-     * Create RX queue 0.
-     */
     ret = rte_eth_rx_queue_setup(
         port,
         0,                      // queue ID
@@ -73,9 +67,6 @@ static int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         return ret;
     }
 
-    /*
-     * Start NIC.
-     */
     ret = rte_eth_dev_start(port);
     if (ret < 0) {
         printf("Could not start port %u\n", port);
@@ -93,8 +84,16 @@ int main(void) {
     
     // Say Hi :)...
 
+    rte_eal_init(0, NULL);
+    rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", 8192, 250, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+
+    port_init(0, mbuf_pool);
+
+    handle_signal(SIGINT);
+
     
-    printf("Hello, World!\n");
+    
+    // printf("Hello, World!\n");
 
 
 
