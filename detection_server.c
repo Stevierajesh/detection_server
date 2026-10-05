@@ -27,6 +27,17 @@
 #define RX_RING_SIZE 512
 #define BURST_SIZE 32
 #define MAX_FLOWS 10000
+
+#define PACKET_RATE_THRESHOLD 10000  // packets per second
+#define BYTE_RATE_THRESHOLD 100000000  // bytes per second (100 Mbps)
+#define FLOW_DURATION_MIN 100000  // min cycles for anomaly detection
+
+enum detection_result {
+    NORMAL,
+    SUSPICIOUS,
+    DDoS
+};
+
 static bool running = true;
 
 struct flow_key {
@@ -43,6 +54,8 @@ struct flow_stats {
     uint64_t byte_count;
     uint64_t first_seen;
     uint64_t last_seen;
+    enum detection_result classification;
+    uint8_t threat_score;  // 0-100, used by expensive classifier
 };
 
 static struct flow_stats flow_table[MAX_FLOWS];
@@ -69,8 +82,59 @@ static struct flow_stats* flow_lookup_or_create(struct flow_key *key, uint64_t t
     flow_table[flow_count].byte_count = 0;
     flow_table[flow_count].first_seen = timestamp;
     flow_table[flow_count].last_seen = timestamp;
+    flow_table[flow_count].classification = NORMAL;
+    flow_table[flow_count].threat_score = 0;
 
     return &flow_table[flow_count++];
+}
+
+/* Stage 1: Fast threshold/statistical filter */
+static enum detection_result fast_filter(struct flow_stats *flow)
+{
+    uint64_t duration = flow->last_seen - flow->first_seen;
+    if (duration == 0) {
+        return NORMAL;
+    }
+
+    uint64_t pps = (flow->packet_count * rte_get_tsc_hz()) / duration;
+    uint64_t bps = (flow->byte_count * rte_get_tsc_hz()) / duration;
+
+    if (pps > PACKET_RATE_THRESHOLD || bps > BYTE_RATE_THRESHOLD) {
+        return SUSPICIOUS;
+    }
+
+    return NORMAL;
+}
+
+/* Stage 2: Mark suspicious traffic for further analysis */
+static void mark_suspicious(struct flow_stats *flow)
+{
+    if (flow->classification == SUSPICIOUS) {
+        flow->threat_score = 50;
+    }
+}
+
+/* Stage 3: Expensive classifier (template for future implementation) */
+static enum detection_result expensive_classifier(struct flow_stats *flow)
+{
+    if (flow->classification != SUSPICIOUS) {
+        return NORMAL;
+    }
+
+    /* TODO: Implement expensive detection logic here
+     *
+     * Placeholder for advanced classification:
+     * - Payload analysis / entropy calculation
+     * - Statistical anomaly detection
+     * - Machine learning inference
+     * - Packet pattern matching
+     * - Protocol anomalies
+     *
+     * Should set flow->threat_score (0-100) and return NORMAL or DDoS
+     */
+
+    flow->threat_score = 75;  // Placeholder
+    return NORMAL;  // Replace with actual classification
 }
 
 static void handle_signal(int signal)
@@ -176,11 +240,23 @@ int main(void) {
                 key.dst_port = 0;
             }
 
-            struct flow_stats *flow = flow_lookup_or_create(&key, rte_rdtsc());
+            uint64_t now = rte_rdtsc();
+            struct flow_stats *flow = flow_lookup_or_create(&key, now);
             if (flow) {
                 flow->packet_count++;
                 flow->byte_count += pkt->pkt_len;
-                flow->last_seen = rte_rdtsc();
+                flow->last_seen = now;
+
+                /* Stage 1: Fast threshold filter */
+                flow->classification = fast_filter(flow);
+
+                /* Stage 2: Mark suspicious traffic */
+                if (flow->classification == SUSPICIOUS) {
+                    mark_suspicious(flow);
+
+                    /* Stage 3: Expensive classifier (optional, only if marked suspicious) */
+                    flow->classification = expensive_classifier(flow);
+                }
             }
         }
 
